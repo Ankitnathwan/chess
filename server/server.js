@@ -3,6 +3,8 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { Chess } from 'chess.js';
+import path from 'path'; // 👈 1. Import the path module
+import { fileURLToPath } from 'url'; // 👈 Needed for ES modules (import)
 
 const app = express();
 app.use(cors());
@@ -13,15 +15,22 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 4000;
 
+// 👇 2. Define __dirname for ES Modules (This is CRUCIAL)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 👇 3. Serve static files from the React build directory
+// This line makes Express serve files like:
+// /static/js/main.x123y.js -> build/static/js/main.x123y.js
+// /pieces/wP.svg -> build/pieces/wP.svg
+app.use(express.static(path.join(__dirname, 'build')));
+
 const waiting = [];  // waiting queue of socket IDs
 // Map of roomId -> { chess: Chess(), players: { white, black } }
 const games = new Map();
 
-app.get('/', (req, res) => {
-    res.send('Multiplayer chess server running');
-});
-
-
+// 👇 4. Your API and Socket.io routes go here as normal
+// This is where your backend logic lives
 io.on('connection', socket => {
     console.log('socket connected', socket.id);
 
@@ -93,6 +102,13 @@ io.on('connection', socket => {
             }
         }
     });
+});
+
+// 👇 5. The Catch-All Handler: Send React's index.html for all other requests.
+// This MUST be the last route defined.
+// It allows client-side routing (e.g., React Router) to work.
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'build', 'index.html'));
 });
 
 // ✅ Start server ONCE here
