@@ -15,23 +15,19 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 4000;
 
-// 👇 Define __dirname for ES Modules
+// Define __dirname for ES Modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 👇 CORRECTED: Serve static files from Vite build directory (../client/dist)
-// Since server.js is in /server, we need to go up one level, then into client/dist
+// Serve static files from Vite build directory
 app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
 
 const waiting = [];  // waiting queue of socket IDs
-// Map of roomId -> { chess: Chess(), players: { white, black } }
 const games = new Map();
 
-// Your API and Socket.io routes
 io.on('connection', socket => {
     console.log('socket connected', socket.id);
 
-    // Player joins the queue
     socket.on('join', () => {
         console.log('join from', socket.id);
 
@@ -42,11 +38,10 @@ io.on('connection', socket => {
             io.sockets.sockets.get(opponentId)?.join(roomId);
 
             const chess = new Chess();
-            const white = opponentId;  // first waiting gets white
-            const black = socket.id;   // new player gets black
+            const white = opponentId;
+            const black = socket.id;
             games.set(roomId, { chess, players: { white, black } });
 
-            // Notify both players
             io.to(white).emit('paired', { roomId, color: 'white', fen: chess.fen(), pgn: chess.pgn() });
             io.to(black).emit('paired', { roomId, color: 'black', fen: chess.fen(), pgn: chess.pgn() });
 
@@ -57,7 +52,6 @@ io.on('connection', socket => {
         }
     });
 
-    // Handle moves
     socket.on('makeMove', ({ roomId, from, to, promotion }) => {
         const game = games.get(roomId);
         if (!game) return;
@@ -66,29 +60,24 @@ io.on('connection', socket => {
         const move = chess.move({ from, to, promotion });
 
         if (move) {
-            // Broadcast updated state
             io.to(roomId).emit('gameUpdate', {
                 fen: chess.fen(),
                 pgn: chess.pgn(),
                 move
             });
         } else {
-            // Invalid move attempt
             socket.emit('invalidMove', { from, to, promotion });
         }
     });
 
-    // Handle disconnect
     socket.on('disconnect', () => {
         console.log('socket disconnected', socket.id);
 
-        // Remove from waiting queue if still waiting
         const idx = waiting.indexOf(socket.id);
         if (idx !== -1) {
             waiting.splice(idx, 1);
         }
 
-        // Find any game the player was in
         for (const [roomId, game] of games.entries()) {
             const { players } = game;
             if (players.white === socket.id || players.black === socket.id) {
@@ -101,10 +90,9 @@ io.on('connection', socket => {
     });
 });
 
-// 👇 CORRECTED: Catch-All Handler - Send Vite's index.html
-app.get('*', (req, res) => {
+// FIXED: Use app.use instead of app.get('*') to avoid path-to-regexp error
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, '..', 'client', 'dist', 'index.html'));
 });
 
-// Start server
 server.listen(PORT, () => console.log('Server listening on', PORT));
