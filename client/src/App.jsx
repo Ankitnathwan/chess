@@ -13,7 +13,7 @@ export default function App() {
   const [legalMoves, setLegalMoves] = useState([]);
 
   useEffect(() => {
-    const s = io('http://localhost:4000');
+    const s = io("https://multiplayer-chess-2w3q.onrender.com");
     setSocket(s);
 
     s.on('connect', () => setStatus('connected'));
