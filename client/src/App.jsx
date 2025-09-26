@@ -11,6 +11,7 @@ export default function App() {
   const chessRef = useRef(new Chess());
   const [selectedSquare, setSelectedSquare] = useState(null);
   const [legalMoves, setLegalMoves] = useState([]);
+  const [gameMessage, setGameMessage] = useState('');
 
   useEffect(() => {
     if (!socket) return;
@@ -32,6 +33,7 @@ export default function App() {
       chessRef.current.load(data.fen);
       setFen(data.fen);
       setStatus('paired');
+      setGameMessage('');
       console.log('Paired with opponent', data);
     });
     
@@ -41,24 +43,28 @@ export default function App() {
       setSelectedSquare(null);
       setLegalMoves([]);
       if (data.isGameOver) {
-        if (data.checkmate) alert('Checkmate! ' + (data.winner || ''));
-        else if (data.draw) alert('Draw');
+        if (data.checkmate) setGameMessage('Checkmate! ' + (data.winner || ''));
+        else if (data.draw) setGameMessage('Draw');
+        else setGameMessage('');
+      } else {
+        setGameMessage('');
       }
       console.log('Game updated', data);
     });
     
     socket.on('illegalMove', ({ reason }) => {
-      alert('Illegal move: ' + reason);
+      setGameMessage('Illegal move: ' + reason);
       console.log('Illegal move', reason);
     });
     
     socket.on('opponentDisconnected', () => {
-      alert('Opponent disconnected.');
+      setGameMessage('Opponent disconnected.');
       console.log('Opponent disconnected');
     });
 
     socket.on('disconnect', () => {
       setStatus('disconnected');
+      setGameMessage('');
       console.log('Disconnected from server');
     });
 
@@ -175,7 +181,7 @@ export default function App() {
     
     const currentPlayerTurn = chessRef.current.turn() === (color === 'white' ? 'w' : 'b');
     if (!currentPlayerTurn) {
-      alert("It's not your turn!");
+      setGameMessage("It's not your turn!");
       return;
     }
 
@@ -203,6 +209,13 @@ export default function App() {
     <div style={{ padding: 20, fontFamily: 'sans-serif', color: 'white' }}>
       <h1 style={{ fontSize: 24 }}>Multiplayer Chess ♟️</h1>
       <p>Status: {status} {color ? ` — you are ${color}` : ''}</p>
+      
+      {/* Game message UI */}
+      {gameMessage && (
+        <div style={{ background: '#222', color: 'yellow', padding: 10, margin: '10px 0', borderRadius: 4 }}>
+          {gameMessage}
+        </div>
+      )}
       
       {status === 'disconnected' && (
         <button onClick={joinGame}>Connect & Join</button>
