@@ -13,19 +13,29 @@ export default function App() {
   const [legalMoves, setLegalMoves] = useState([]);
 
   useEffect(() => {
-    const s = io("https://multiplayer-chess-2w3q.onrender.com");
-    setSocket(s);
+    if (!socket) return;
 
-    s.on('connect', () => setStatus('connected'));
-    s.on('waiting', () => setStatus('waiting'));
-    s.on('paired', data => {
+    // Set up socket event listeners
+    socket.on('connect', () => {
+      setStatus('connected');
+      console.log('Connected to server');
+    });
+    
+    socket.on('waiting', () => {
+      setStatus('waiting');
+      console.log('Waiting for opponent');
+    });
+    
+    socket.on('paired', data => {
       setRoomId(data.roomId);
       setColor(data.color);
       chessRef.current.load(data.fen);
       setFen(data.fen);
       setStatus('paired');
+      console.log('Paired with opponent', data);
     });
-    s.on('gameUpdate', data => {
+    
+    socket.on('gameUpdate', data => {
       chessRef.current.load(data.fen);
       setFen(data.fen);
       setSelectedSquare(null);
@@ -34,29 +44,135 @@ export default function App() {
         if (data.checkmate) alert('Checkmate! ' + (data.winner || ''));
         else if (data.draw) alert('Draw');
       }
+      console.log('Game updated', data);
     });
-    s.on('illegalMove', ({ reason }) => alert('Illegal move: ' + reason));
-    s.on('opponentDisconnected', () => alert('Opponent disconnected.'));
+    
+    socket.on('illegalMove', ({ reason }) => {
+      alert('Illegal move: ' + reason);
+      console.log('Illegal move', reason);
+    });
+    
+    socket.on('opponentDisconnected', () => {
+      alert('Opponent disconnected.');
+      console.log('Opponent disconnected');
+    });
 
-    return () => s.disconnect();
-  }, []);
+    socket.on('disconnect', () => {
+      setStatus('disconnected');
+      console.log('Disconnected from server');
+    });
+
+    return () => {
+      if (socket) {
+        socket.disconnect();
+      }
+    };
+  }, [socket]);
 
   useEffect(() => {
     if (fen) chessRef.current.load(fen);
   }, [fen]);
 
   function joinGame() {
-    if (!socket) return;
-    socket.emit('join');
+    if (status !== 'disconnected') return;
+    
+    console.log('Connecting to server...');
+    setStatus('connecting');
+    
+    // Create a new socket connection
+    const s = io("https://multiplayer-chess-2w3q.onrender.com", {
+    // const s = io("http://localhost:4000", {
+      transports: ['websocket']
+    });
+    
+    setSocket(s);
   }
 
-  function algebraicFromIndex(idx) {
-    const rank = 8 - Math.floor(idx / 8);
-    const file = idx % 8;
-    return String.fromCharCode(97 + file) + rank;
+  function renderBoard() {
+    if (!chessRef.current.board()) return null;
+    
+    const board = chessRef.current.board();
+    const size = Math.min(window.innerWidth, window.innerHeight) / 12;
+
+    // Create a properly reversed board for black
+    const displayBoard = color === 'white' ? board : [...board].reverse().map(row => [...row].reverse());
+    
+    const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    const ranks = ['8','7','6','5','4','3','2','1'];
+    const fileLabels = color === 'white' ? files : [...files].reverse();
+    const rankLabels = color === 'white' ? ranks : [...ranks].reverse();
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'white' }}>
+        {/* Board with rank labels */}
+        <div style={{ display: 'flex', gap: 5 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', height: size * 8 }}>
+            {rankLabels.map((r, idx) => (
+              <div key={idx} style={{ height: size, lineHeight: `${size}px`, textAlign: 'center', fontWeight: 'bold' }}>
+                {r}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(8, ${size}px)` }}>
+            {displayBoard.flat().map((square, idx) => {
+              // Calculate the actual square coordinate
+              const row = Math.floor(idx / 8);
+              const col = idx % 8;
+              
+              // For black, we need to reverse both rows and columns
+              const actualRow = color === 'white' ? row : 7 - row;
+              const actualCol = color === 'white' ? col : 7 - col;
+              const sq = String.fromCharCode(97 + actualCol) + (8 - actualRow);
+
+              const isLight = (actualRow + actualCol) % 2 === 0;
+              const baseColor = isLight ? '#f0d9b5' : '#b58863';
+              const isSelected = selectedSquare === sq;
+              const isLegal = legalMoves.includes(sq);
+              const bgColor = isSelected ? 'yellow' : isLegal ? 'lightgreen' : baseColor;
+
+              return (
+                <div
+                  key={idx}
+                  onClick={() => handleSquareClick(sq)}
+                  style={{
+                    width: size,
+                    height: size,
+                    background: bgColor,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {square && (
+                    <img
+                      src={`/pieces/${square.color}${square.type}.svg`}
+                      alt={`${square.color}${square.type}`}
+                      style={{ width: size * 0.8, height: size * 0.8 }}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* File labels */}
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(8, ${size}px)`, marginTop: 2 }}>
+          {fileLabels.map((f, idx) => (
+            <div key={idx} style={{ textAlign: 'center', fontWeight: 'bold', fontSize: size / 5 }}>
+              {f}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   }
 
   function handleSquareClick(square) {
+    if (!socket || status !== 'paired') return;
+    
     const currentPlayerTurn = chessRef.current.turn() === (color === 'white' ? 'w' : 'b');
     if (!currentPlayerTurn) {
       alert("It's not your turn!");
@@ -83,93 +199,27 @@ export default function App() {
     }
   }
 
-  function renderBoard() {
-  const board = chessRef.current.board();
-  const size = Math.min(window.innerWidth, window.innerHeight) / 12;
-
-  // Create a properly reversed board for black
-  const displayBoard = color === 'white' ? board : [...board].reverse().map(row => [...row].reverse());
-  
-  const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-  const ranks = ['8','7','6','5','4','3','2','1'];
-  const fileLabels = color === 'white' ? files : [...files].reverse();
-  const rankLabels = color === 'white' ? ranks : [...ranks].reverse();
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'white' }}>
-      {/* Board with rank labels */}
-      <div style={{ display: 'flex', gap: 5 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', height: size * 8 }}>
-          {rankLabels.map((r, idx) => (
-            <div key={idx} style={{ height: size, lineHeight: `${size}px`, textAlign: 'center', fontWeight: 'bold' }}>
-              {r}
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: `repeat(8, ${size}px)` }}>
-          {displayBoard.flat().map((square, idx) => {
-            // Calculate the actual square coordinate
-            const row = Math.floor(idx / 8);
-            const col = idx % 8;
-            
-            // For black, we need to reverse both rows and columns
-            const actualRow = color === 'white' ? row : 7 - row;
-            const actualCol = color === 'white' ? col : 7 - col;
-            const sq = String.fromCharCode(97 + actualCol) + (8 - actualRow);
-
-            const isLight = (actualRow + actualCol) % 2 === 0;
-            const baseColor = isLight ? '#f0d9b5' : '#b58863';
-            const isSelected = selectedSquare === sq;
-            const isLegal = legalMoves.includes(sq);
-            const bgColor = isSelected ? 'yellow' : isLegal ? 'lightgreen' : baseColor;
-
-            return (
-              <div
-                key={idx}
-                onClick={() => handleSquareClick(sq)}
-                style={{
-                  width: size,
-                  height: size,
-                  background: bgColor,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-              >
-                {square && (
-                  <img
-                    src={`/pieces/${square.color}${square.type}.svg`}
-                    alt={`${square.color}${square.type}`}
-                    style={{ width: size * 0.8, height: size * 0.8 }}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* File labels */}
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(8, ${size}px)`, marginTop: 2 }}>
-        {fileLabels.map((f, idx) => (
-          <div key={idx} style={{ textAlign: 'center', fontWeight: 'bold', fontSize: size / 5 }}>
-            {f}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
   return (
     <div style={{ padding: 20, fontFamily: 'sans-serif', color: 'white' }}>
       <h1 style={{ fontSize: 24 }}>Multiplayer Chess ♟️</h1>
       <p>Status: {status} {color ? ` — you are ${color}` : ''}</p>
-      {status === 'disconnected' && <button onClick={joinGame}>Connect & Join</button>}
-      {status === 'connected' && <button onClick={joinGame}>Join a game</button>}
-      {status === 'waiting' && <div>Waiting for opponent...</div>}
+      
+      {status === 'disconnected' && (
+        <button onClick={joinGame}>Connect & Join</button>
+      )}
+      
+      {status === 'connecting' && (
+        <div>Connecting to server...</div>
+      )}
+      
+      {status === 'connected' && (
+        <button onClick={() => socket.emit('join')}>Join a game</button>
+      )}
+      
+      {status === 'waiting' && (
+        <div>Waiting for opponent...</div>
+      )}
+      
       {status === 'paired' && (
         <div style={{ display: 'flex', gap: 20 }}>
           <div>{renderBoard()}</div>
