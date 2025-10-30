@@ -30,10 +30,6 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
-  touch-action: none;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
 }
 
 h1 {
