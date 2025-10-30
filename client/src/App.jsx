@@ -154,7 +154,7 @@ export default function App() {
     setStatus('connecting');
     
     const s = io(import.meta.env.PROD 
-      ? "https://your-render-app-url.onrender.com"
+      ? "https://multiplayer-chess-2w3q.onrender.com"
       : "http://localhost:4000", {
       transports: ['websocket']
     });
