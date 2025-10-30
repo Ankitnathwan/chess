@@ -54,19 +54,46 @@ io.on('connection', socket => {
 
     socket.on('makeMove', ({ roomId, from, to, promotion }) => {
         const game = games.get(roomId);
-        if (!game) return;
+        if (!game) {
+            console.log('makeMove: no game for room', roomId);
+            return;
+        }
 
         const { chess, players } = game;
         const move = chess.move({ from, to, promotion });
 
         if (move) {
-            io.to(roomId).emit('gameUpdate', {
+            console.log('=== CHESS.JS GAME STATE ===');
+        console.log('isGameOver():', chess.isGameOver());
+        console.log('isCheckmate():', chess.isCheckmate());
+        console.log('isDraw():', chess.isDraw());
+        console.log('turn():', chess.turn());
+        console.log('move.san:', move.san);
+        console.log('==========================');
+            const isGameOver = chess.isGameOver();
+            const isCheckmate = chess.isCheckmate();
+            const isDraw = chess.isDraw();
+            let winner = null;
+            if (isCheckmate) {
+                // winner is the player who just moved (opposite of current turn)
+                winner = chess.turn() === 'w' ? 'black' : 'white';
+            }
+
+            const payload = {
                 fen: chess.fen(),
                 pgn: chess.pgn(),
-                move
-            });
+                move,
+                isGameOver,
+                checkmate: isCheckmate,
+                draw: isDraw,
+                winner
+            };
+
+            console.log('FULL gameUpdate payload:', JSON.stringify(payload, null, 2))
+            io.to(roomId).emit('gameUpdate', payload);
         } else {
-            socket.emit('invalidMove', { from, to, promotion });
+            console.log('illegal move attempt', { roomId, from, to, promotion });
+            socket.emit('illegalMove', { reason: 'Illegal move' });
         }
     });
 
