@@ -21,7 +21,7 @@ export default function App() {
   const checkmateAudio = useRef(new Audio('/sounds/checkmate.mp3'));
   const castlingAudio = useRef(new Audio('/sounds/castle.mp3'));
   const gameStartAudio = useRef(new Audio('/sounds/game-start.mp3'));
-  const opponentTurnAudio = useRef(new Audio('/sounds/move-opponent.mp3'));
+  const opponentTurnAudio = useRef(new Audio('/sounds/illegal.mp3'));
   const promotionAudio = useRef(new Audio('/sounds/promote.mp3'));
   const drawAudio = useRef(new Audio('/sounds/game-draw.mp3'));
 
@@ -216,6 +216,10 @@ export default function App() {
                 <div
                   key={idx}
                   onClick={() => handleSquareClick(sq)}
+                  onTouchStart={(e) => {
+                    e.preventDefault(); // Prevent zoom
+                    handleSquareClick(sq);
+                  }}
                   style={{
                     width: size,
                     height: size,
