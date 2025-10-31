@@ -1,123 +1,225 @@
 import express from 'express';
-import http from 'http';
-import { Server } from 'socket.io';
 import cors from 'cors';
-import { Chess } from 'chess.js';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { Server } from 'socket.io';
+import { Chess } from 'chess.js';
 
 const app = express();
 app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: '*' }
+  cors: { origin: '*' }
 });
 
-const PORT = process.env.PORT || 4000;
+// Default time controls
+const DEFAULT_TIME = 300; // 5 minutes
+const DEFAULT_INCREMENT = 2; // 2 seconds
 
-// Define __dirname for ES Modules
+const PORT = process.env.PORT || 4000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Serve static files from Vite build directory
 app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
 
-const waiting = [];  // waiting queue of socket IDs
+// Store waiting players with their time preferences
+const waiting = []; // [{socketId, timeControl}]
 const games = new Map();
 
+function makeRoomId() {
+  return Math.random().toString(36).slice(2, 9);
+}
+
 io.on('connection', socket => {
-    console.log('socket connected', socket.id);
+  console.log('socket connected', socket.id);
 
-    socket.on('join', () => {
-        console.log('join from', socket.id);
+  socket.on('join', (timeControl) => {
+    // Validate time control
+    const initialTime = timeControl?.time ? Math.max(30, Math.min(3600, parseInt(timeControl.time))) : DEFAULT_TIME;
+    const increment = timeControl?.increment ? Math.max(0, Math.min(60, parseInt(timeControl.increment))) : DEFAULT_INCREMENT;
+    
+    // Remove existing entry if any
+    const existingIndex = waiting.findIndex(w => w.socketId === socket.id);
+    if (existingIndex !== -1) {
+      waiting.splice(existingIndex, 1);
+    }
 
-        if (waiting.length > 0) {
-            const opponentId = waiting.shift();
-            const roomId = `room-${socket.id}-${opponentId}`;
-            socket.join(roomId);
-            io.sockets.sockets.get(opponentId)?.join(roomId);
-
-            const chess = new Chess();
-            const white = opponentId;
-            const black = socket.id;
-            games.set(roomId, { chess, players: { white, black } });
-
-            io.to(white).emit('paired', { roomId, color: 'white', fen: chess.fen(), pgn: chess.pgn() });
-            io.to(black).emit('paired', { roomId, color: 'black', fen: chess.fen(), pgn: chess.pgn() });
-
-            console.log(`Game started in ${roomId}`);
-        } else {
-            waiting.push(socket.id);
-            socket.emit('waiting');
-        }
+    // Add to waiting queue with time preferences
+    waiting.push({
+      socketId: socket.id,
+      timeControl: { time: initialTime, increment: increment }
     });
+    console.log('waiting queue:', waiting);
 
-    socket.on('makeMove', ({ roomId, from, to, promotion }) => {
-        const game = games.get(roomId);
-        if (!game) {
-            console.log('makeMove: no game for room', roomId);
-            return;
+    // Try to find match with same time control
+    const matchIndex = waiting.findIndex(w => 
+      w.socketId !== socket.id && 
+      w.timeControl.time === initialTime &&
+      w.timeControl.increment === increment
+    );
+
+    if (matchIndex !== -1) {
+      // Found matching opponent
+      const opponent = waiting[matchIndex];
+      waiting.splice(matchIndex, 1);
+      waiting.splice(waiting.findIndex(w => w.socketId === socket.id), 1);
+
+      const roomId = makeRoomId();
+      const chess = new Chess();
+
+      const timePrefs = {
+        initialTime,
+        increment
+      };
+
+      const assignAWhite = Math.random() < 0.5;
+      const players = {
+        white: assignAWhite ? socket.id : opponent.socketId,
+        black: assignAWhite ? opponent.socketId : socket.id
+      };
+
+      const sA = io.sockets.sockets.get(socket.id);
+      const sB = io.sockets.sockets.get(opponent.socketId);
+      if (sA) sA.join(roomId);
+      if (sB) sB.join(roomId);
+
+      const timers = {
+        remaining: { 
+          white: timePrefs.initialTime, 
+          black: timePrefs.initialTime 
+        },
+        increment: timePrefs.increment,
+        lastMoveTs: Date.now(),
+        runningColor: 'white'
+      };
+
+      games.set(roomId, { chess, players, timers });
+
+      if (sA) {
+        sA.emit('paired', { 
+          roomId, 
+          color: assignAWhite ? 'white' : 'black', 
+          fen: chess.fen(), 
+          timers,
+          timeControl: timePrefs 
+        });
+      }
+      if (sB) {
+        sB.emit('paired', { 
+          roomId, 
+          color: assignAWhite ? 'black' : 'white', 
+          fen: chess.fen(), 
+          timers,
+          timeControl: timePrefs 
+        });
+      }
+
+      console.log('paired', roomId, players, timePrefs);
+    } else {
+      socket.emit('waiting');
+    }
+  });
+
+  socket.on('makeMove', ({ roomId, from, to, promotion }) => {
+    try {
+      if (typeof roomId !== 'string' || typeof from !== 'string' || typeof to !== 'string') {
+        socket.emit('illegalMove', { reason: 'Invalid move payload' });
+        return;
+      }
+
+      const game = games.get(roomId);
+      if (!game) {
+        socket.emit('illegalMove', { reason: 'No such game' });
+        return;
+      }
+
+      const { chess, timers } = game;
+      const now = Date.now();
+
+      if (timers.runningColor) {
+        const elapsed = Math.max(0, Math.floor((now - timers.lastMoveTs) / 1000));
+        if (elapsed > 0) {
+          timers.remaining[timers.runningColor] = Math.max(0, 
+            Math.floor(timers.remaining[timers.runningColor] - elapsed)
+          );
         }
+      }
 
-        const { chess, players } = game;
-        const move = chess.move({ from, to, promotion });
+      const movingColor = chess.turn() === 'w' ? 'white' : 'black';
 
-        if (move) {
-            console.log('=== CHESS.JS GAME STATE ===');
-        console.log('isGameOver():', chess.isGameOver());
-        console.log('isCheckmate():', chess.isCheckmate());
-        console.log('isDraw():', chess.isDraw());
-        console.log('turn():', chess.turn());
-        console.log('move.san:', move.san);
-        console.log('==========================');
-            const isGameOver = chess.isGameOver();
-            const isCheckmate = chess.isCheckmate();
-            const isDraw = chess.isDraw();
-            let winner = null;
-            if (isCheckmate) {
-                // winner is the player who just moved (opposite of current turn)
-                winner = chess.turn() === 'w' ? 'black' : 'white';
-            }
+      if (timers.remaining[movingColor] <= 0) {
+        io.to(roomId).emit('gameUpdate', {
+          fen: chess.fen(),
+          isGameOver: true,
+          timeout: movingColor,
+          winner: movingColor === 'white' ? 'black' : 'white',
+          timers: JSON.parse(JSON.stringify(timers))
+        });
+        games.delete(roomId);
+        return;
+      }
 
-            const payload = {
-                fen: chess.fen(),
-                pgn: chess.pgn(),
-                move,
-                isGameOver,
-                checkmate: isCheckmate,
-                draw: isDraw,
-                winner
-            };
+      // Normalize promotion
+      if (promotion) {
+        promotion = String(promotion).toLowerCase();
+        if (!['q', 'r', 'b', 'n'].includes(promotion)) promotion = undefined;
+      }
 
-            console.log('FULL gameUpdate payload:', JSON.stringify(payload, null, 2))
-            io.to(roomId).emit('gameUpdate', payload);
-        } else {
-            console.log('illegal move attempt', { roomId, from, to, promotion });
-            socket.emit('illegalMove', { reason: 'Illegal move' });
-        }
-    });
+      // Check move legality
+      const legal = chess.moves({ verbose: true }).some(m =>
+        m.from === from && m.to === to && (!m.promotion || m.promotion === promotion)
+      );
 
-    socket.on('disconnect', () => {
-        console.log('socket disconnected', socket.id);
+      if (!legal) {
+        socket.emit('illegalMove', { reason: 'Illegal move' });
+        return;
+      }
 
-        const idx = waiting.indexOf(socket.id);
-        if (idx !== -1) {
-            waiting.splice(idx, 1);
-        }
+      const move = chess.move({ from, to, promotion });
+      
+      timers.remaining[movingColor] = Math.floor(Number(timers.remaining[movingColor]) + Number(timers.increment));
+      timers.runningColor = movingColor === 'white' ? 'black' : 'white';
+      timers.lastMoveTs = now;
 
-        for (const [roomId, game] of games.entries()) {
-            const { players } = game;
-            if (players.white === socket.id || players.black === socket.id) {
-                io.to(roomId).emit('opponentDisconnected');
-                games.delete(roomId);
-                console.log(`Game in ${roomId} ended due to disconnect`);
-                break;
-            }
-        }
-    });
+      const payload = {
+        fen: chess.fen(),
+        pgn: chess.pgn(),
+        move,
+        isGameOver: chess.isGameOver(),
+        checkmate: chess.isCheckmate(),
+        draw: chess.isDraw(),
+        winner: chess.isCheckmate() ? (chess.turn() === 'w' ? 'black' : 'white') : null,
+        timers: JSON.parse(JSON.stringify(timers))
+      };
+
+      io.to(roomId).emit('gameUpdate', payload);
+      if (payload.isGameOver) games.delete(roomId);
+
+    } catch (err) {
+      console.error('makeMove handler error:', err);
+      socket.emit('illegalMove', { reason: 'Server error' });
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('socket disconnected', socket.id);
+    const wi = waiting.findIndex(w => w.socketId === socket.id);
+    if (wi !== -1) waiting.splice(wi, 1);
+
+    for (const [roomId, game] of games.entries()) {
+      const { players } = game;
+      if (players.white === socket.id || players.black === socket.id) {
+        const opponentId = players.white === socket.id ? players.black : players.white;
+        const opp = io.sockets.sockets.get(opponentId);
+        if (opp) opp.emit('opponentDisconnected');
+        games.delete(roomId);
+        break;
+      }
+    }
+  });
 });
 
-// FIXED: Use app.use instead of app.get('*') to avoid path-to-regexp error
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, '..', 'client', 'dist', 'index.html'));
 });
